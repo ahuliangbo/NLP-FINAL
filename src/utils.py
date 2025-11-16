@@ -183,7 +183,7 @@ def build_padding_mask(attention_mask: Tensor) -> Tensor:
 class PositionalEncoding(nn.Module):
     """Sinusoidal positional encoding."""
 
-    def __init__(self, embed_dim: int, max_len: int = 512):
+    def __init__(self, embed_dim: int, max_len: int = 2048):
         """Pre-compute sinusoidal encodings per `Attention Is All You Need`.
 
         Args:

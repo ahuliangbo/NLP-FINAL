@@ -1,14 +1,16 @@
 """Training script for the decoder-only causal language model."""
 
 import argparse
+import json
+import time
 from pathlib import Path
 from typing import List
 
 import torch
 from torch.utils.data import DataLoader, Dataset
 
-from assignment4.models.decoder_only import DecoderConfig, MiniDecoder, build_few_shot_prompt
-from assignment4.utils import SimpleTokenizer, set_seed
+from models.decoder_only import DecoderConfig, MiniDecoder, build_few_shot_prompt
+from utils import SimpleTokenizer, set_seed
 
 PACKAGE_DIR = Path(__file__).resolve().parent
 DEFAULT_DATA_PATH = PACKAGE_DIR / "data" / "pattern_sequences.txt"
@@ -18,10 +20,17 @@ DEFAULT_OUTPUT_DIR = PACKAGE_DIR / "checkpoints"
 class PatternDataset(Dataset):
     """Dataset made from repeating pattern sequences."""
 
-    def __init__(self, sequences: List[str], tokenizer: SimpleTokenizer):
-        """Store tokenized pattern sequences."""
+    def __init__(self, sequences: List[str], tokenizer: SimpleTokenizer, max_length: int = None):
+        """Store tokenized pattern sequences.
+        
+        Args:
+            sequences: List of text sequences.
+            tokenizer: Tokenizer for encoding.
+            max_length: Maximum sequence length (in tokens). Longer sequences are truncated.
+        """
         self.sequences = [seq for seq in sequences if seq.strip()]
         self.tokenizer = tokenizer
+        self.max_length = max_length
 
     def __len__(self) -> int:
         """Return dataset size."""
@@ -30,6 +39,9 @@ class PatternDataset(Dataset):
     def __getitem__(self, index: int):
         """Tokenize one sequence and add BOS/EOS tokens."""
         tokens = self.tokenizer.encode(self.sequences[index], add_special_tokens=True)
+        # Truncate to max_length if specified
+        if self.max_length and len(tokens) > self.max_length:
+            tokens = tokens[:self.max_length]
         return {"input_ids": tokens}
 
 
@@ -52,18 +64,25 @@ def collate_fn(batch, tokenizer: SimpleTokenizer):
     }
 
 
-def load_sequences(path: Path) -> List[str]:
+def load_sequences(path: Path, max_lines: int = None) -> List[str]:
     """Read newline-separated sequences from disk.
 
     Args:
         path: Path to the text file containing sequences.
+        max_lines: Optional limit on number of lines to load.
 
     Returns:
         List of stripped sequence strings.
     """
-    # Use strip to avoid empty trailing lines that would create short samples.
+    sequences = []
     with open(path, "r", encoding="utf-8") as handle:
-        return [line.strip() for line in handle if line.strip()]
+        for i, line in enumerate(handle):
+            if max_lines and i >= max_lines:
+                break
+            stripped = line.strip()
+            if stripped:
+                sequences.append(stripped)
+    return sequences
 
 
 def train(args):
@@ -73,9 +92,13 @@ def train(args):
         args: Parsed CLI arguments.
     """
     device = torch.device("cuda" if torch.cuda.is_available() and not args.cpu else "cpu")
-    sequences = load_sequences(args.data_path)
+    print(f"Using device: {device}")
+    print(f"Loading data from {args.data_path}...")
+    sequences = load_sequences(args.data_path, max_lines=args.max_lines)
+    print(f"Loaded {len(sequences)} sequences")
+    
     tokenizer = SimpleTokenizer(sequences)
-    dataset = PatternDataset(sequences, tokenizer)
+    dataset = PatternDataset(sequences, tokenizer, max_length=args.max_seq_len)
     loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, collate_fn=lambda b: collate_fn(b, tokenizer))
 
     config = DecoderConfig(
@@ -158,8 +181,9 @@ def parse_args():
     parser.add_argument("--ff-dim", type=int, default=256)
     parser.add_argument("--num-layers", type=int, default=4)
     parser.add_argument("--dropout", type=float, default=0.1)
-    parser.add_argument("--max-seq-len", type=int, default=64)
+    parser.add_argument("--max-seq-len", type=int, default=128, help="Maximum sequence length (longer sequences will be truncated)")
     parser.add_argument("--lr", type=float, default=3e-4)
+    parser.add_argument("--max-lines", type=int, default=None, help="Limit number of lines to load from dataset")
     parser.add_argument("--clip-norm", type=float, default=1.0)
     parser.add_argument("--cpu", action="store_true")
     parser.add_argument("--seed", type=int, default=42)

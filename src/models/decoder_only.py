@@ -7,7 +7,7 @@ import torch
 from torch import Tensor, nn
 import torch.nn.functional as F
 
-from assignment4.utils import PositionalEncoding, ResidualBlock, build_causal_mask, build_padding_mask
+from utils import PositionalEncoding, ResidualBlock, build_causal_mask, build_padding_mask
 
 
 class CausalSelfAttentionBlock(nn.Module):
