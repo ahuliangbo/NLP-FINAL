@@ -1,0 +1,14 @@
+[
+  {"utterance": "book a flight to paris", "intent": "book_flight"},
+  {"utterance": "reserve a table for two", "intent": "book_restaurant"},
+  {"utterance": "play some jazz music", "intent": "play_music"},
+  {"utterance": "turn off the living room lights", "intent": "control_lights"},
+  {"utterance": "what is the weather tomorrow", "intent": "get_weather"},
+  {"utterance": "set an alarm for 7 am", "intent": "set_alarm"},
+  {"utterance": "remind me to call mom", "intent": "set_reminder"},
+  {"utterance": "how long to boil pasta", "intent": "cooking_help"},
+  {"utterance": "navigate to the nearest gas station", "intent": "navigate"},
+  {"utterance": "translate hello to spanish", "intent": "translate"},
+  {"utterance": "add milk to my shopping list", "intent": "shopping_list"},
+  {"utterance": "text john that i will be late", "intent": "send_message"}
+]

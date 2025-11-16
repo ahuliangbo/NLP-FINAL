@@ -1,0 +1,10 @@
+red blue red blue red
+one two three one two
+alpha beta gamma alpha beta
+go stop go stop go
+sun moon star sun moon
+rain wind rain wind rain
+circle square circle square circle
+short long short long short
+ping pong ping pong ping
+north east south west north
