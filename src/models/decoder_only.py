@@ -1,5 +1,3 @@
-"""Starter code for the decoder-only miniature language model."""
-
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
@@ -49,6 +47,31 @@ class DecoderConfig:
     pos_type: str = "sinusoidal"  # options: "sinusoidal", "learned", "rotary"
 
 
+class LearnedPositionalEncoding(nn.Module):
+    """Learned positional encoding with extrapolation support."""
+    
+    def __init__(self, max_seq_len: int, embed_dim: int):
+        super().__init__()
+        self.max_seq_len = max_seq_len
+        self.emb = nn.Embedding(max_seq_len, embed_dim)
+    
+    def forward(self, x: Tensor) -> Tensor:
+        seq_len = x.size(1)
+        device = x.device
+        
+        if seq_len <= self.max_seq_len:
+            # Normal case: within trained range
+            pos = self.emb(torch.arange(seq_len, device=device))
+            return x + pos.unsqueeze(0)
+        else:
+            # Extrapolation: repeat last position for tokens beyond max_seq_len
+            positions = torch.arange(seq_len, device=device)
+            # Clamp positions to max_seq_len - 1
+            positions = positions.clamp(max=self.max_seq_len - 1)
+            pos = self.emb(positions)
+            return x + pos.unsqueeze(0)
+
+
 class MiniDecoder(nn.Module):
     """Decoder-only transformer for causal language modelling."""
 
@@ -56,25 +79,18 @@ class MiniDecoder(nn.Module):
         super().__init__()
         self.config = config
         self.token_embed = nn.Embedding(config.vocab_size, config.embed_dim, padding_idx=config.pad_token_id)
-        # positional encoding selection
+        
+        # Positional encoding selection
         pos_type = getattr(config, "pos_type", "sinusoidal")
         if pos_type == "sinusoidal":
             self.pos_encoding = PositionalEncoding(config.embed_dim, config.max_seq_len)
         elif pos_type == "learned":
-            # learned absolute positional embeddings
-            emb = nn.Embedding(config.max_seq_len, config.embed_dim)
-            class _LearnedPos(nn.Module):
-                def __init__(self, emb):
-                    super().__init__()
-                    self.emb = emb
-                def forward(self, x):
-                    seq_len = x.size(1)
-                    pos = self.emb(torch.arange(seq_len, device=x.device))
-                    return x + pos.unsqueeze(0)
-            self.pos_encoding = _LearnedPos(emb)
+            # Use the fixed learned positional encoding class
+            self.pos_encoding = LearnedPositionalEncoding(config.max_seq_len, config.embed_dim)
         else:
-            # for rotary, attention handles positions; keep identity here
+            # For rotary, attention handles positions; keep identity here
             self.pos_encoding = nn.Identity()
+        
         self.dropout = nn.Dropout(config.dropout)
         self.layers = nn.ModuleList(
             [
@@ -202,6 +218,7 @@ class MiniDecoder(nn.Module):
             target_mask = target_mask[:, 1:]
         
         return (token_log_probs * target_mask.float()).sum(dim=1)
+
 
 def build_few_shot_prompt(examples: List[Dict[str, str]], query: str) -> str:
     """Helper used in the training script to form a few-shot prompt."""

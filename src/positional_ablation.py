@@ -96,45 +96,89 @@ def train_model(sequences, data_path, pos_type, epochs=5, batch_size=16, embed_d
 
 @torch.no_grad()
 def eval_perplexity(model: MiniDecoder, tokenizer: SimpleTokenizer, sequences: List[str], length: int, device=None, batch_size=32):
+    """Evaluate perplexity on sequences of a specific length.
+    
+    Args:
+        model: The decoder model to evaluate.
+        tokenizer: Tokenizer for encoding sequences.
+        sequences: List of text sequences to evaluate on.
+        length: Target sequence length.
+        device: Device to run evaluation on.
+        batch_size: Batch size for evaluation.
+    
+    Returns:
+        Perplexity score.
+    """
     if device is None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    
     model.eval()
     inputs = []
+    
+    # Get special token IDs
+    pad_id = tokenizer.token_id(tokenizer.pad_token)
+    bos_id = tokenizer.token_id(tokenizer.bos_token)
+    eos_id = tokenizer.token_id(tokenizer.eos_token)
+    
     for s in sequences:
         toks = tokenizer.encode(s, add_special_tokens=True)
-        # make sequence of requested length by repeating/ truncating
+        
+        # Truncate or pad to desired length
         if len(toks) >= length:
+            # Truncate: keep BOS + content + EOS
             t = toks[:length]
+            # Ensure EOS at the end if truncated
+            if length > 0:
+                t[-1] = eos_id
         else:
-            # repeat tokens (excluding special tokens) to reach length
-            body = toks[1:-1] if len(toks) > 2 else toks
-            if not body:
-                body = [tokenizer.token_id(tokenizer.mask_token)]
-            rep = []
-            while len(rep) + 2 < length:
-                rep.extend(body)
-            t = [toks[0]] + rep[: max(0, length - 2)] + [toks[-1]]
-            t = t[:length]
+            # Pad with PAD tokens (not by repeating content)
+            # This is more standard for length testing
+            t = toks + [pad_id] * (length - len(toks))
+        
+        # Validate all token IDs are within vocab
+        if any(tok_id >= tokenizer.vocab_size or tok_id < 0 for tok_id in t):
+            print(f"Warning: Invalid token IDs in sequence. Vocab size: {tokenizer.vocab_size}")
+            print(f"Token IDs: {t}")
+            # Skip invalid sequences
+            continue
+            
         inputs.append(t)
-    # batch eval
+    
+    if not inputs:
+        print("Warning: No valid sequences for evaluation")
+        return float('inf')
+    
+    # Batch evaluation
     total_loss = 0.0
     total_tokens = 0
-    device = model.lm_head.weight.device
+    
     for i in range(0, len(inputs), batch_size):
         batch = inputs[i : i + batch_size]
         padded, attention = tokenizer.pad(batch)
+        
         input_ids = padded.to(device)
         attention_mask = attention.to(device)
         labels = padded.to(device)
-        out = model.forward_train(input_ids, attention_mask=attention_mask, labels=labels)
-        loss = float(out["loss"].item())
-        # loss returned is average per token in batch, multiply
-        # approximate total tokens = batch_size * length
-        bs = input_ids.size(0)
-        total_loss += loss * bs
-        total_tokens += bs
-    avg_loss = total_loss / max(1, total_tokens)
-    ppl = math.exp(avg_loss)
+        
+        try:
+            out = model.forward_train(input_ids, attention_mask=attention_mask, labels=labels)
+            loss = float(out["loss"].item())
+            
+            # Count actual tokens (not padding)
+            num_tokens = attention_mask.sum().item()
+            total_loss += loss * num_tokens
+            total_tokens += num_tokens
+        except RuntimeError as e:
+            print(f"Error during evaluation: {e}")
+            print(f"Input IDs shape: {input_ids.shape}, max: {input_ids.max()}, min: {input_ids.min()}")
+            print(f"Vocab size: {tokenizer.vocab_size}")
+            raise
+    
+    if total_tokens == 0:
+        return float('inf')
+    
+    avg_loss = total_loss / total_tokens
+    ppl = math.exp(min(avg_loss, 20))  # Cap to prevent overflow
     return ppl
 
 

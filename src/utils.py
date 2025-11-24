@@ -181,22 +181,37 @@ def build_padding_mask(attention_mask: Tensor) -> Tensor:
 
 
 class PositionalEncoding(nn.Module):
-    """Sinusoidal positional encoding."""
+    """Sinusoidal positional encoding with dynamic extension for longer sequences."""
 
     def __init__(self, embed_dim: int, max_len: int = 2048):
         """Pre-compute sinusoidal encodings per `Attention Is All You Need`.
 
         Args:
             embed_dim: Transformer embedding dimension.
-            max_len: Maximum sequence length supported.
+            max_len: Initial maximum sequence length supported.
         """
         super().__init__()
+        self.embed_dim = embed_dim
+        self.max_len = max_len
+        pe = self._generate_positional_encoding(max_len, embed_dim)
+        self.register_buffer("pe", pe, persistent=False)
+
+    def _generate_positional_encoding(self, max_len: int, embed_dim: int) -> Tensor:
+        """Generate sinusoidal positional encodings.
+        
+        Args:
+            max_len: Maximum sequence length.
+            embed_dim: Embedding dimension.
+            
+        Returns:
+            Positional encoding tensor of shape (1, max_len, embed_dim).
+        """
         position = torch.arange(0, max_len).unsqueeze(1)
         div_term = torch.exp(torch.arange(0, embed_dim, 2) * (-math.log(10000.0) / embed_dim))
         pe = torch.zeros(max_len, embed_dim)
         pe[:, 0::2] = torch.sin(position * div_term)
         pe[:, 1::2] = torch.cos(position * div_term)
-        self.register_buffer("pe", pe.unsqueeze(0), persistent=False)
+        return pe.unsqueeze(0)  # (1, max_len, embed_dim)
 
     def forward(self, x: Tensor) -> Tensor:
         """Add positional information to the input embeddings.
@@ -207,10 +222,17 @@ class PositionalEncoding(nn.Module):
         Returns:
             Tensor with positional encodings added.
         """
-        # Input shape (batch, seq_len, embed_dim).
         seq_len = x.size(1)
+        
+        # If sequence is longer than current buffer, extend it
+        if seq_len > self.pe.size(1):
+            # Generate new positional encodings up to seq_len
+            new_pe = self._generate_positional_encoding(seq_len, self.embed_dim)
+            # Move to same device as input
+            self.pe = new_pe.to(x.device)
+            self.max_len = seq_len
+        
         return x + self.pe[:, :seq_len]
-
 
 class FeedForward(nn.Module):
     """Position-wise feed-forward network."""
