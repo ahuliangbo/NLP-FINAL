@@ -313,13 +313,88 @@ class MultiHeadAttention(nn.Module):
         return self.out_proj(output)
 
 
+class RotaryMultiHeadAttention(MultiHeadAttention):
+    """Multi-head attention with Rotary Position Embeddings (RoPE) applied to queries and keys."""
+
+    def __init__(self, embed_dim: int, num_heads: int, dropout: float = 0.1):
+        super().__init__(embed_dim, num_heads, dropout)
+
+    def _build_sin_cos(self, seq_len: int, device: Optional[torch.device] = None):
+        # Build sin and cos for RoPE
+        dim = self.head_dim
+        inv_freq = 1.0 / (10000 ** (torch.arange(0, dim, 2, device=device).float() / dim))
+        positions = torch.arange(seq_len, device=device, dtype=inv_freq.dtype)
+        freqs = torch.einsum("n,d->nd", positions, inv_freq)
+        sin = torch.sin(freqs)
+        cos = torch.cos(freqs)
+        return sin, cos
+
+    def _apply_rope(self, x: Tensor, sin: Tensor, cos: Tensor) -> Tensor:
+        # x shape: (batch, heads, seq_len, head_dim)
+        x1 = x[..., 0::2]
+        x2 = x[..., 1::2]
+        x_rot_1 = x1 * cos.unsqueeze(0).unsqueeze(0) - x2 * sin.unsqueeze(0).unsqueeze(0)
+        x_rot_2 = x1 * sin.unsqueeze(0).unsqueeze(0) + x2 * cos.unsqueeze(0).unsqueeze(0)
+        x_out = torch.empty_like(x)
+        x_out[..., 0::2] = x_rot_1
+        x_out[..., 1::2] = x_rot_2
+        return x_out
+
+    def forward(
+        self,
+        query: Tensor,
+        key: Tensor,
+        value: Tensor,
+        attn_mask: Optional[Tensor] = None,
+        key_padding_mask: Optional[Tensor] = None,
+    ) -> Tensor:
+        batch_size, query_len, _ = query.shape
+        key_len = key.size(1)
+
+        q = self.q_proj(query)
+        k = self.k_proj(key)
+        v = self.v_proj(value)
+
+        q = q.view(batch_size, query_len, self.num_heads, self.head_dim).transpose(1, 2)
+        k = k.view(batch_size, key_len, self.num_heads, self.head_dim).transpose(1, 2)
+        v = v.view(batch_size, key_len, self.num_heads, self.head_dim).transpose(1, 2)
+
+        seq_len = max(query_len, key_len)
+        sin, cos = self._build_sin_cos(seq_len, device=query.device)
+
+        q = self._apply_rope(q, sin[:query_len], cos[:query_len])
+        k = self._apply_rope(k, sin[:key_len], cos[:key_len])
+
+        scores = torch.matmul(q, k.transpose(-2, -1)) * self.scale
+
+        if attn_mask is not None:
+            if attn_mask.dim() == 2:
+                attn_mask = attn_mask.unsqueeze(0)
+            if attn_mask.dim() == 3:
+                attn_mask = attn_mask.unsqueeze(1)
+            scores = scores + attn_mask
+
+        if key_padding_mask is not None:
+            mask = key_padding_mask.unsqueeze(1).unsqueeze(2)
+            scores = scores.masked_fill(mask, float("-inf"))
+
+        attn = torch.softmax(scores, dim=-1)
+        attn = self.dropout(attn)
+        output = torch.matmul(attn, v)
+        output = output.transpose(1, 2).contiguous().view(batch_size, query_len, self.embed_dim)
+        return self.out_proj(output)
+
+
 class ResidualBlock(nn.Module):
     """Transformer-style residual block with attention and feed-forward."""
 
-    def __init__(self, embed_dim: int, num_heads: int, ff_dim: int, dropout: float):
+    def __init__(self, embed_dim: int, num_heads: int, ff_dim: int, dropout: float, rotary: bool = False):
         """Create a residual attention + MLP block."""
         super().__init__()
-        self.self_attn = MultiHeadAttention(embed_dim, num_heads, dropout)
+        if rotary:
+            self.self_attn = RotaryMultiHeadAttention(embed_dim, num_heads, dropout)
+        else:
+            self.self_attn = MultiHeadAttention(embed_dim, num_heads, dropout)
         self.dropout = nn.Dropout(dropout)
         self.norm1 = nn.LayerNorm(embed_dim)
         self.ff = FeedForward(embed_dim, ff_dim, dropout)

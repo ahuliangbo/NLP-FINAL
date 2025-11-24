@@ -13,9 +13,9 @@ from utils import PositionalEncoding, ResidualBlock, build_causal_mask, build_pa
 class CausalSelfAttentionBlock(nn.Module):
     """Causal self-attention block used inside :class:`MiniDecoder`."""
 
-    def __init__(self, embed_dim: int, num_heads: int, ff_dim: int, dropout: float):
+    def __init__(self, embed_dim: int, num_heads: int, ff_dim: int, dropout: float, rotary: bool = False):
         super().__init__()
-        self.block = ResidualBlock(embed_dim, num_heads, ff_dim, dropout)
+        self.block = ResidualBlock(embed_dim, num_heads, ff_dim, dropout, rotary=rotary)
 
     def forward(self, hidden_states: Tensor, attention_mask: Tensor) -> Tensor:
         """Apply left-to-right self-attention.
@@ -46,6 +46,7 @@ class DecoderConfig:
     pad_token_id: int = 0
     bos_token_id: int = 1
     eos_token_id: int = 2
+    pos_type: str = "sinusoidal"  # options: "sinusoidal", "learned", "rotary"
 
 
 class MiniDecoder(nn.Module):
@@ -55,11 +56,35 @@ class MiniDecoder(nn.Module):
         super().__init__()
         self.config = config
         self.token_embed = nn.Embedding(config.vocab_size, config.embed_dim, padding_idx=config.pad_token_id)
-        self.pos_encoding = PositionalEncoding(config.embed_dim, config.max_seq_len)
+        # positional encoding selection
+        pos_type = getattr(config, "pos_type", "sinusoidal")
+        if pos_type == "sinusoidal":
+            self.pos_encoding = PositionalEncoding(config.embed_dim, config.max_seq_len)
+        elif pos_type == "learned":
+            # learned absolute positional embeddings
+            emb = nn.Embedding(config.max_seq_len, config.embed_dim)
+            class _LearnedPos(nn.Module):
+                def __init__(self, emb):
+                    super().__init__()
+                    self.emb = emb
+                def forward(self, x):
+                    seq_len = x.size(1)
+                    pos = self.emb(torch.arange(seq_len, device=x.device))
+                    return x + pos.unsqueeze(0)
+            self.pos_encoding = _LearnedPos(emb)
+        else:
+            # for rotary, attention handles positions; keep identity here
+            self.pos_encoding = nn.Identity()
         self.dropout = nn.Dropout(config.dropout)
         self.layers = nn.ModuleList(
             [
-                CausalSelfAttentionBlock(config.embed_dim, config.num_heads, config.ff_dim, config.dropout)
+                CausalSelfAttentionBlock(
+                    config.embed_dim,
+                    config.num_heads,
+                    config.ff_dim,
+                    config.dropout,
+                    rotary=(pos_type == "rotary"),
+                )
                 for _ in range(config.num_layers)
             ]
         )
