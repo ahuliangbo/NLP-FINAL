@@ -386,36 +386,6 @@ def evaluate_pretrained_model(
     }
 
 
-def plot_comparison(mini_history: Dict, pretrained_history: Dict, config: ExperimentConfig):
-    """Create comparison plots."""
-    config.output_dir.mkdir(parents=True, exist_ok=True)
-    
-    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
-    
-    # Training loss
-    axes[0].plot(mini_history['loss'], marker='o', label='Mini Model', linewidth=2)
-    axes[0].plot(pretrained_history['loss'], marker='s', label='DistilGPT-2', linewidth=2)
-    axes[0].set_xlabel('Epoch', fontsize=12)
-    axes[0].set_ylabel('Training Loss', fontsize=12)
-    axes[0].set_title('Training Loss Comparison', fontsize=14, fontweight='bold')
-    axes[0].legend()
-    axes[0].grid(True, alpha=0.3)
-    
-    # training accuracy
-    axes[1].plot(mini_history['accuracy'], marker='o', label='Mini Model', linewidth=2)
-    axes[1].plot(pretrained_history['accuracy'], marker='s', label='DistilGPT-2', linewidth=2)
-    axes[1].set_xlabel('Epoch', fontsize=12)
-    axes[1].set_ylabel('Training Accuracy', fontsize=12)
-    axes[1].set_title('Training Accuracy Comparison', fontsize=14, fontweight='bold')
-    axes[1].legend()
-    axes[1].grid(True, alpha=0.3)
-    
-    plt.tight_layout()
-    plt.savefig(config.output_dir / 'training_comparison.png', dpi=150, bbox_inches='tight')
-    plt.close()
-    print(f"\nSaved training comparison plot to {config.output_dir / 'training_comparison.png'}")
-
-
 def create_results_summary(
     mini_results: Dict,
     pretrained_results: Dict,
@@ -427,32 +397,33 @@ def create_results_summary(
     
     summary = {
         'mini_model': {
-            'test_accuracy': mini_results['accuracy'],
-            'avg_inference_time_per_batch': mini_results['avg_inference_time'],
-            'final_training_loss': mini_history['loss'][-1],
-            'final_training_accuracy': mini_history['accuracy'][-1],
-            'avg_time_per_epoch': np.mean(mini_history['time_per_epoch']),
-            'total_training_time': sum(mini_history['time_per_epoch'])
+            'test_accuracy': float(mini_results['accuracy']),  # Convert to float
+            'avg_inference_time_per_batch': float(mini_results['avg_inference_time']),
+            'final_training_loss': float(mini_history['loss'][-1]),
+            'final_training_accuracy': float(mini_history['accuracy'][-1]),
+            'avg_time_per_epoch': float(np.mean(mini_history['time_per_epoch'])),
+            'total_training_time': float(sum(mini_history['time_per_epoch']))
         },
         'pretrained_model': {
-            'test_accuracy': pretrained_results['accuracy'],
-            'avg_inference_time_per_batch': pretrained_results['avg_inference_time'],
-            'final_training_loss': pretrained_history['loss'][-1],
-            'final_training_accuracy': pretrained_history['accuracy'][-1],
-            'avg_time_per_epoch': np.mean(pretrained_history['time_per_epoch']),
-            'total_training_time': sum(pretrained_history['time_per_epoch'])
+            'test_accuracy': float(pretrained_results['accuracy']),
+            'avg_inference_time_per_batch': float(pretrained_results['avg_inference_time']),
+            'final_training_loss': float(pretrained_history['loss'][-1]),
+            'final_training_accuracy': float(pretrained_history['accuracy'][-1]),
+            'avg_time_per_epoch': float(np.mean(pretrained_history['time_per_epoch'])),
+            'total_training_time': float(sum(pretrained_history['time_per_epoch']))
         },
         'comparison': {
-            'accuracy_gap': pretrained_results['accuracy'] - mini_results['accuracy'],
-            'speedup_ratio': mini_results['avg_inference_time'] / pretrained_results['avg_inference_time']
+            'accuracy_gap': float(pretrained_results['accuracy'] - mini_results['accuracy']),
+            'speedup_ratio': float(mini_results['avg_inference_time'] / pretrained_results['avg_inference_time'])
         }
     }
     
     # Save JSON
     with open(config.output_dir / 'results_summary.json', 'w') as f:
         json.dump(summary, f, indent=2)
-    # summary
-    print("\n" + "="*70)
+    
+    # Print summary
+    print("\n" + "="*60)
     print("RESULTS SUMMARY")
     print("="*70)
     print(f"\nMini Model:")
@@ -471,8 +442,6 @@ def create_results_summary(
     print("="*70)
     
     return summary
-
-
 def run_experiment():
     """Run the complete comparison experiment."""
     set_seed(42)
