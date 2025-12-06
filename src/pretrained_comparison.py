@@ -94,7 +94,7 @@ class MiniDecoderClassifier(nn.Module):
 
 
 def prepare_mini_model(train_texts: List[str], config: ExperimentConfig) -> Tuple[MiniDecoderClassifier, SimpleTokenizer]:
-    print("\n=== Preparing Mini Model ===")
+    print("\n--Preparing Mini Model--")
     
     tokenizer = SimpleTokenizer(train_texts)
     print(f"Mini model vocab size: {tokenizer.vocab_size}")
@@ -125,7 +125,7 @@ def prepare_mini_model(train_texts: List[str], config: ExperimentConfig) -> Tupl
 
 def prepare_pretrained_model(model_name: str = "distilgpt2"):
     """Load pretrained model from Hugging Face."""
-    print(f"\n=== Preparing Pretrained Model: {model_name} ===")
+    print(f"\n--Preparing Pretrained Model: {model_name}--")
     
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     
@@ -154,7 +154,7 @@ def train_mini_model(
     config: ExperimentConfig
 ) -> Dict:
     """Train the mini model."""
-    print("\n=== Training Mini Model ===")
+    print("\n--Training Mini Model--")
     
     model = model.to(config.device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=config.learning_rate)
@@ -215,7 +215,7 @@ def train_pretrained_model(
     train_labels: List[int],
     config: ExperimentConfig
 ) -> Dict:
-    print("\n=== Fine-tuning Pretrained Model ===")
+    print("\n--Fine-tuning pretrained Model--")
     
     model = model.to(config.device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=config.learning_rate)

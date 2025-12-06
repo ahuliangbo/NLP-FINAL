@@ -195,7 +195,7 @@ def run_ablation(data_path: Path, output_dir: Path, max_lines=2000):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     for pos in pos_types:
-        print(f"\n=== Training pos_type={pos} ===")
+        print(f"\n--Training pos_type={pos}--")
         model, tokenizer, losses = train_model(train_seqs, data_path, pos_type=pos, epochs=5, batch_size=32, embed_dim=128, num_layers=4, max_seq_len=128, device=device)
         results[pos] = {"model": model, "tokenizer": tokenizer, "losses": losses}
 
