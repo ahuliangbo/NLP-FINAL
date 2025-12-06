@@ -174,7 +174,7 @@ def train_mini_model(
         
         for batch in dataloader:
             texts = batch['text']
-            labels = torch.tensor(batch['label']).to(config.device)
+            labels = torch.as_tensor(batch['label'], dtype=torch.long).to(config.device)
             
             token_ids = [tokenizer.encode(text, add_special_tokens=True)[:config.max_length] 
                         for text in texts]
@@ -241,7 +241,7 @@ def train_pretrained_model(
         
         for batch in dataloader:
             texts = batch['text']
-            labels = torch.tensor(batch['label']).to(config.device)
+            labels = torch.as_tensor(batch['label'], dtype=torch.long).to(config.device)
             
             encoded = tokenizer(
                 texts,
@@ -386,6 +386,36 @@ def evaluate_pretrained_model(
     }
 
 
+def plot_comparison(mini_history: Dict, pretrained_history: Dict, config: ExperimentConfig):
+    """Create comparison plots."""
+    config.output_dir.mkdir(parents=True, exist_ok=True)
+    
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+    
+    # Training loss
+    axes[0].plot(mini_history['loss'], marker='o', label='Mini Model', linewidth=2)
+    axes[0].plot(pretrained_history['loss'], marker='s', label='DistilGPT-2', linewidth=2)
+    axes[0].set_xlabel('Epoch', fontsize=12)
+    axes[0].set_ylabel('Training Loss', fontsize=12)
+    axes[0].set_title('Training Loss Comparison', fontsize=14, fontweight='bold')
+    axes[0].legend()
+    axes[0].grid(True, alpha=0.3)
+    
+    # Training accuracy
+    axes[1].plot(mini_history['accuracy'], marker='o', label='Mini Model', linewidth=2)
+    axes[1].plot(pretrained_history['accuracy'], marker='s', label='DistilGPT-2', linewidth=2)
+    axes[1].set_xlabel('Epoch', fontsize=12)
+    axes[1].set_ylabel('Training Accuracy', fontsize=12)
+    axes[1].set_title('Training Accuracy Comparison', fontsize=14, fontweight='bold')
+    axes[1].legend()
+    axes[1].grid(True, alpha=0.3)
+    
+    plt.tight_layout()
+    plt.savefig(config.output_dir / 'training_comparison.png', dpi=150, bbox_inches='tight')
+    plt.close()
+    print(f"\nSaved training comparison plot to {config.output_dir / 'training_comparison.png'}")
+
+
 def create_results_summary(
     mini_results: Dict,
     pretrained_results: Dict,
@@ -397,7 +427,7 @@ def create_results_summary(
     
     summary = {
         'mini_model': {
-            'test_accuracy': float(mini_results['accuracy']),  # Convert to float
+            'test_accuracy': float(mini_results['accuracy']),
             'avg_inference_time_per_batch': float(mini_results['avg_inference_time']),
             'final_training_loss': float(mini_history['loss'][-1]),
             'final_training_accuracy': float(mini_history['accuracy'][-1]),
@@ -423,7 +453,7 @@ def create_results_summary(
         json.dump(summary, f, indent=2)
     
     # Print summary
-    print("\n" + "="*60)
+    print("\n" + "="*70)
     print("RESULTS SUMMARY")
     print("="*70)
     print(f"\nMini Model:")
@@ -442,10 +472,18 @@ def create_results_summary(
     print("="*70)
     
     return summary
+
+
 def run_experiment():
     """Run the complete comparison experiment."""
     set_seed(42)
     config = ExperimentConfig()
+    
+    # Print device info
+    print(f"Using device: {config.device}")
+    if torch.cuda.is_available():
+        print(f"GPU: {torch.cuda.get_device_name(0)}")
+        print(f"GPU Memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.2f} GB")
     
     train_texts, train_labels, test_texts, test_labels = load_imdb_data(config)
     
