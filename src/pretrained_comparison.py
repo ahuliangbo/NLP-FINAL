@@ -21,17 +21,19 @@ from utils import SimpleTokenizer, set_seed
 
 @dataclass
 class ExperimentConfig:
-    max_samples_train: int = 5000
-    max_samples_test: int = 1000
-    max_length: int = 256
+    # Using MNLI - a much harder 3-way classification task
+    task: str = "mnli"  # Options: "mnli", "qqp", "qnli"
+    max_samples_train: int = 50000  # More data for harder task
+    max_samples_test: int = 5000
+    max_length: int = 128  # Shorter for premise-hypothesis pairs
     
-    batch_size: int = 16
+    batch_size: int = 32  # Larger batch for GPU
     learning_rate: float = 2e-5
-    num_epochs: int = 3
-    warmup_steps: int = 100
+    num_epochs: int = 5  # More epochs for harder task
+    warmup_steps: int = 500
     
     mini_embed_dim: int = 128
-    mini_num_layers: int = 4
+    mini_num_layers: int = 6  # Deeper for harder task
     mini_num_heads: int = 4
     
     output_dir: Path = Path("outputs/part2_comparison")
@@ -39,8 +41,8 @@ class ExperimentConfig:
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
 
 
-class IMDbDataset(Dataset):
-    """Simple dataset wrapper for IMDb sentiment classification."""
+class NLIDataset(Dataset):
+    """Dataset wrapper for NLI tasks (MNLI, QNLI, etc.)."""
     
     def __init__(self, texts: List[str], labels: List[int], tokenizer, max_length: int):
         self.texts = texts
@@ -58,45 +60,123 @@ class IMDbDataset(Dataset):
         }
 
 
-def load_imdb_data(config: ExperimentConfig) -> Tuple[List[str], List[int], List[str], List[int]]:
-    """Load and prepare IMDb dataset."""
-    print("Loading IMDb dataset...")
-    dataset = load_dataset("imdb")
+def load_nli_data(config: ExperimentConfig) -> Tuple[List[str], List[int], List[str], List[int], int]:
+    """Load and prepare NLI dataset (MNLI, QNLI, or QQP)."""
+    print(f"Loading {config.task.upper()} dataset...")
     
-    train_texts = dataset['train']['text'][:config.max_samples_train]
-    train_labels = dataset['train']['label'][:config.max_samples_train]
+    if config.task == "mnli":
+        dataset = load_dataset("glue", "mnli")
+        train_split = dataset['train']
+        test_split = dataset['validation_matched']  # Using matched validation
+        
+        # Combine premise and hypothesis
+        train_texts = [
+            f"{premise} [SEP] {hypothesis}" 
+            for premise, hypothesis in zip(
+                train_split['premise'][:config.max_samples_train],
+                train_split['hypothesis'][:config.max_samples_train]
+            )
+        ]
+        train_labels = train_split['label'][:config.max_samples_train]
+        
+        test_texts = [
+            f"{premise} [SEP] {hypothesis}" 
+            for premise, hypothesis in zip(
+                test_split['premise'][:config.max_samples_test],
+                test_split['hypothesis'][:config.max_samples_test]
+            )
+        ]
+        test_labels = test_split['label'][:config.max_samples_test]
+        num_labels = 3  # entailment, neutral, contradiction
+        
+    elif config.task == "qnli":
+        dataset = load_dataset("glue", "qnli")
+        train_split = dataset['train']
+        test_split = dataset['validation']
+        
+        train_texts = [
+            f"{question} [SEP] {sentence}" 
+            for question, sentence in zip(
+                train_split['question'][:config.max_samples_train],
+                train_split['sentence'][:config.max_samples_train]
+            )
+        ]
+        train_labels = train_split['label'][:config.max_samples_train]
+        
+        test_texts = [
+            f"{question} [SEP] {sentence}" 
+            for question, sentence in zip(
+                test_split['question'][:config.max_samples_test],
+                test_split['sentence'][:config.max_samples_test]
+            )
+        ]
+        test_labels = test_split['label'][:config.max_samples_test]
+        num_labels = 2  # entailment, not_entailment
+        
+    elif config.task == "qqp":
+        dataset = load_dataset("glue", "qqp")
+        train_split = dataset['train']
+        test_split = dataset['validation']
+        
+        train_texts = [
+            f"{q1} [SEP] {q2}" 
+            for q1, q2 in zip(
+                train_split['question1'][:config.max_samples_train],
+                train_split['question2'][:config.max_samples_train]
+            )
+        ]
+        train_labels = train_split['label'][:config.max_samples_train]
+        
+        test_texts = [
+            f"{q1} [SEP] {q2}" 
+            for q1, q2 in zip(
+                test_split['question1'][:config.max_samples_test],
+                test_split['question2'][:config.max_samples_test]
+            )
+        ]
+        test_labels = test_split['label'][:config.max_samples_test]
+        num_labels = 2  # duplicate, not_duplicate
     
-    test_texts = dataset['test']['text'][:config.max_samples_test]
-    test_labels = dataset['test']['label'][:config.max_samples_test]
+    else:
+        raise ValueError(f"Unknown task: {config.task}")
     
+    # Diagnostics
     print(f"Train samples: {len(train_texts)}, Test samples: {len(test_texts)}")
-    return train_texts, train_labels, test_texts, test_labels
+    print(f"Number of classes: {num_labels}")
+    print(f"Train label distribution: {np.bincount(train_labels)}")
+    print(f"Test label distribution: {np.bincount(test_labels)}")
+    print(f"Sample text: {train_texts[0][:100]}...")
+    
+    return train_texts, train_labels, test_texts, test_labels, num_labels
 
 
 class MiniDecoderClassifier(nn.Module):
     """Wrap your mini decoder for sequence classification."""
     
-    def __init__(self, config: DecoderConfig, num_classes: int = 2):
+    def __init__(self, config: DecoderConfig, num_classes: int):
         super().__init__()
         self.decoder = MiniDecoder(config)
+        self.dropout = nn.Dropout(0.1)
         self.classifier = nn.Linear(config.embed_dim, num_classes)
         self.num_classes = num_classes
     
     def forward(self, input_ids, attention_mask):
         hidden = self.decoder.forward(input_ids, attention_mask)
         
+        # Use last non-padding token
         sequence_lengths = attention_mask.sum(dim=1) - 1
         batch_size = hidden.size(0)
         last_hidden = hidden[torch.arange(batch_size), sequence_lengths]
         
+        last_hidden = self.dropout(last_hidden)
         logits = self.classifier(last_hidden)
         return logits
 
 
-def prepare_mini_model(train_texts: List[str], config: ExperimentConfig) -> Tuple[MiniDecoderClassifier, SimpleTokenizer]:
+def prepare_mini_model(train_texts: List[str], config: ExperimentConfig, num_labels: int) -> Tuple[MiniDecoderClassifier, SimpleTokenizer]:
     print("\n--Preparing Mini Model--")
     
-    tokenizer = SimpleTokenizer(train_texts)
+    tokenizer = SimpleTokenizer(train_texts, vocab_size=20000)  # Larger vocab
     print(f"Mini model vocab size: {tokenizer.vocab_size}")
     
     decoder_config = DecoderConfig(
@@ -110,10 +190,10 @@ def prepare_mini_model(train_texts: List[str], config: ExperimentConfig) -> Tupl
         pad_token_id=tokenizer.token_id(tokenizer.pad_token),
         bos_token_id=tokenizer.token_id(tokenizer.bos_token),
         eos_token_id=tokenizer.token_id(tokenizer.eos_token),
-        pos_type="rotary"  # Use best from Part 1
+        pos_type="rotary"
     )
     
-    model = MiniDecoderClassifier(decoder_config, num_classes=2)
+    model = MiniDecoderClassifier(decoder_config, num_classes=num_labels)
     
     total_params = sum(p.numel() for p in model.parameters())
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -123,7 +203,7 @@ def prepare_mini_model(train_texts: List[str], config: ExperimentConfig) -> Tupl
     return model, tokenizer
 
 
-def prepare_pretrained_model(model_name: str = "distilgpt2"):
+def prepare_pretrained_model(model_name: str = "distilgpt2", num_labels: int = 3):
     """Load pretrained model from Hugging Face."""
     print(f"\n--Preparing Pretrained Model: {model_name}--")
     
@@ -134,7 +214,7 @@ def prepare_pretrained_model(model_name: str = "distilgpt2"):
     
     model = AutoModelForSequenceClassification.from_pretrained(
         model_name,
-        num_labels=2,
+        num_labels=num_labels,
         pad_token_id=tokenizer.pad_token_id
     )
     
@@ -157,10 +237,10 @@ def train_mini_model(
     print("\n--Training Mini Model--")
     
     model = model.to(config.device)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=config.learning_rate)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=config.learning_rate, weight_decay=0.01)
     criterion = nn.CrossEntropyLoss()
     
-    dataset = IMDbDataset(train_texts, train_labels, tokenizer, config.max_length)
+    dataset = NLIDataset(train_texts, train_labels, tokenizer, config.max_length)
     dataloader = DataLoader(dataset, batch_size=config.batch_size, shuffle=True)
     
     history = {'loss': [], 'accuracy': [], 'time_per_epoch': []}
@@ -172,7 +252,7 @@ def train_mini_model(
         correct = 0
         total = 0
         
-        for batch in dataloader:
+        for batch_idx, batch in enumerate(dataloader):
             texts = batch['text']
             labels = torch.as_tensor(batch['label'], dtype=torch.long).to(config.device)
             
@@ -187,12 +267,17 @@ def train_mini_model(
             
             optimizer.zero_grad()
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
             
             total_loss += loss.item()
             predictions = logits.argmax(dim=1)
             correct += (predictions == labels).sum().item()
             total += labels.size(0)
+            
+            # Progress updates
+            if batch_idx % 100 == 0:
+                print(f"  Batch {batch_idx}/{len(dataloader)} - Loss: {loss.item():.4f}")
         
         epoch_time = time.time() - epoch_start
         avg_loss = total_loss / len(dataloader)
@@ -215,12 +300,12 @@ def train_pretrained_model(
     train_labels: List[int],
     config: ExperimentConfig
 ) -> Dict:
-    print("\n--Fine-tuning pretrained Model--")
+    print("\n--Fine-tuning Pretrained Model--")
     
     model = model.to(config.device)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=config.learning_rate)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=config.learning_rate, weight_decay=0.01)
     
-    dataset = IMDbDataset(train_texts, train_labels, tokenizer, config.max_length)
+    dataset = NLIDataset(train_texts, train_labels, tokenizer, config.max_length)
     dataloader = DataLoader(dataset, batch_size=config.batch_size, shuffle=True)
     
     total_steps = len(dataloader) * config.num_epochs
@@ -239,7 +324,7 @@ def train_pretrained_model(
         correct = 0
         total = 0
         
-        for batch in dataloader:
+        for batch_idx, batch in enumerate(dataloader):
             texts = batch['text']
             labels = torch.as_tensor(batch['label'], dtype=torch.long).to(config.device)
             
@@ -267,6 +352,10 @@ def train_pretrained_model(
             predictions = logits.argmax(dim=1)
             correct += (predictions == labels).sum().item()
             total += labels.size(0)
+            
+            # Progress updates
+            if batch_idx % 100 == 0:
+                print(f"  Batch {batch_idx}/{len(dataloader)} - Loss: {loss.item():.4f}")
         
         epoch_time = time.time() - epoch_start
         avg_loss = total_loss / len(dataloader)
@@ -290,10 +379,11 @@ def evaluate_mini_model(
     test_labels: List[int],
     config: ExperimentConfig
 ) -> Dict:
+    print("\n--Evaluating Mini Model--")
     model.eval()
     model = model.to(config.device)
     
-    dataset = IMDbDataset(test_texts, test_labels, tokenizer, config.max_length)
+    dataset = NLIDataset(test_texts, test_labels, tokenizer, config.max_length)
     dataloader = DataLoader(dataset, batch_size=config.batch_size, shuffle=False)
     
     all_predictions = []
@@ -323,6 +413,8 @@ def evaluate_mini_model(
     accuracy = correct / len(all_labels)
     avg_inference_time = total_time / len(dataloader)
     
+    print(f"Test Accuracy: {accuracy:.4f}")
+    
     return {
         'accuracy': accuracy,
         'avg_inference_time': avg_inference_time,
@@ -340,10 +432,11 @@ def evaluate_pretrained_model(
     config: ExperimentConfig
 ) -> Dict:
     """Evaluate pretrained model on test set."""
+    print("\n--Evaluating Pretrained Model--")
     model.eval()
     model = model.to(config.device)
     
-    dataset = IMDbDataset(test_texts, test_labels, tokenizer, config.max_length)
+    dataset = NLIDataset(test_texts, test_labels, tokenizer, config.max_length)
     dataloader = DataLoader(dataset, batch_size=config.batch_size, shuffle=False)
     
     all_predictions = []
@@ -377,6 +470,8 @@ def evaluate_pretrained_model(
     correct = sum(p == l for p, l in zip(all_predictions, all_labels))
     accuracy = correct / len(all_labels)
     avg_inference_time = total_time / len(dataloader)
+    
+    print(f"Test Accuracy: {accuracy:.4f}")
     
     return {
         'accuracy': accuracy,
@@ -426,6 +521,7 @@ def create_results_summary(
     """Create a comprehensive results summary."""
     
     summary = {
+        'task': config.task,
         'mini_model': {
             'test_accuracy': float(mini_results['accuracy']),
             'avg_inference_time_per_batch': float(mini_results['avg_inference_time']),
@@ -444,7 +540,8 @@ def create_results_summary(
         },
         'comparison': {
             'accuracy_gap': float(pretrained_results['accuracy'] - mini_results['accuracy']),
-            'speedup_ratio': float(mini_results['avg_inference_time'] / pretrained_results['avg_inference_time'])
+            'training_speedup': float(summary['pretrained_model']['total_training_time'] / summary['mini_model']['total_training_time']) if summary['mini_model']['total_training_time'] > 0 else 0,
+            'inference_speedup': float(pretrained_results['avg_inference_time'] / mini_results['avg_inference_time']) if mini_results['avg_inference_time'] > 0 else 0
         }
     }
     
@@ -454,21 +551,23 @@ def create_results_summary(
     
     # Print summary
     print("\n" + "="*70)
-    print("RESULTS SUMMARY")
+    print(f"RESULTS SUMMARY - {config.task.upper()} TASK")
     print("="*70)
     print(f"\nMini Model:")
-    print(f"  Test Accuracy: {mini_results['accuracy']:.4f}")
+    print(f"  Test Accuracy: {mini_results['accuracy']:.4f} ({mini_results['accuracy']*100:.2f}%)")
     print(f"  Avg Inference Time: {mini_results['avg_inference_time']:.4f}s")
     print(f"  Total Training Time: {summary['mini_model']['total_training_time']:.2f}s")
     
     print(f"\nPretrained Model (DistilGPT-2):")
-    print(f"  Test Accuracy: {pretrained_results['accuracy']:.4f}")
+    print(f"  Test Accuracy: {pretrained_results['accuracy']:.4f} ({pretrained_results['accuracy']*100:.2f}%)")
     print(f"  Avg Inference Time: {pretrained_results['avg_inference_time']:.4f}s")
     print(f"  Total Training Time: {summary['pretrained_model']['total_training_time']:.2f}s")
     
     print(f"\nComparison:")
     print(f"  Accuracy Gap: {summary['comparison']['accuracy_gap']:.4f} "
-          f"({summary['comparison']['accuracy_gap']*100:.2f}% {'better' if summary['comparison']['accuracy_gap'] > 0 else 'worse'})")
+          f"({abs(summary['comparison']['accuracy_gap'])*100:.2f}% {'advantage pretrained' if summary['comparison']['accuracy_gap'] > 0 else 'advantage mini'})")
+    print(f"  Training Speedup (Mini vs Pretrained): {summary['comparison']['training_speedup']:.2f}x")
+    print(f"  Inference Speedup (Mini vs Pretrained): {summary['comparison']['inference_speedup']:.2f}x")
     print("="*70)
     
     return summary
@@ -485,13 +584,13 @@ def run_experiment():
         print(f"GPU: {torch.cuda.get_device_name(0)}")
         print(f"GPU Memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.2f} GB")
     
-    train_texts, train_labels, test_texts, test_labels = load_imdb_data(config)
+    train_texts, train_labels, test_texts, test_labels, num_labels = load_nli_data(config)
     
-    mini_model, mini_tokenizer = prepare_mini_model(train_texts, config)
+    mini_model, mini_tokenizer = prepare_mini_model(train_texts, config, num_labels)
     mini_history = train_mini_model(mini_model, mini_tokenizer, train_texts, train_labels, config)
     mini_results = evaluate_mini_model(mini_model, mini_tokenizer, test_texts, test_labels, config)
     
-    pretrained_model, pretrained_tokenizer = prepare_pretrained_model("distilgpt2")
+    pretrained_model, pretrained_tokenizer = prepare_pretrained_model("distilgpt2", num_labels)
     pretrained_history = train_pretrained_model(pretrained_model, pretrained_tokenizer, train_texts, train_labels, config)
     pretrained_results = evaluate_pretrained_model(pretrained_model, pretrained_tokenizer, test_texts, test_labels, config)
     
