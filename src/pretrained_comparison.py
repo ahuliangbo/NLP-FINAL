@@ -176,7 +176,7 @@ class MiniDecoderClassifier(nn.Module):
 def prepare_mini_model(train_texts: List[str], config: ExperimentConfig, num_labels: int) -> Tuple[MiniDecoderClassifier, SimpleTokenizer]:
     print("\n--Preparing Mini Model--")
     
-    tokenizer = SimpleTokenizer(train_texts, vocab_size=20000)  # Larger vocab
+    tokenizer = SimpleTokenizer(train_texts)
     print(f"Mini model vocab size: {tokenizer.vocab_size}")
     
     decoder_config = DecoderConfig(
