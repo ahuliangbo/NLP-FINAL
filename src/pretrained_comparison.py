@@ -520,28 +520,34 @@ def create_results_summary(
 ):
     """Create a comprehensive results summary."""
     
+    # Calculate totals first
+    mini_total_time = float(sum(mini_history['time_per_epoch']))
+    pretrained_total_time = float(sum(pretrained_history['time_per_epoch']))
+    mini_inference_time = float(mini_results['avg_inference_time'])
+    pretrained_inference_time = float(pretrained_results['avg_inference_time'])
+    
     summary = {
         'task': config.task,
         'mini_model': {
             'test_accuracy': float(mini_results['accuracy']),
-            'avg_inference_time_per_batch': float(mini_results['avg_inference_time']),
+            'avg_inference_time_per_batch': mini_inference_time,
             'final_training_loss': float(mini_history['loss'][-1]),
             'final_training_accuracy': float(mini_history['accuracy'][-1]),
             'avg_time_per_epoch': float(np.mean(mini_history['time_per_epoch'])),
-            'total_training_time': float(sum(mini_history['time_per_epoch']))
+            'total_training_time': mini_total_time
         },
         'pretrained_model': {
             'test_accuracy': float(pretrained_results['accuracy']),
-            'avg_inference_time_per_batch': float(pretrained_results['avg_inference_time']),
+            'avg_inference_time_per_batch': pretrained_inference_time,
             'final_training_loss': float(pretrained_history['loss'][-1]),
             'final_training_accuracy': float(pretrained_history['accuracy'][-1]),
             'avg_time_per_epoch': float(np.mean(pretrained_history['time_per_epoch'])),
-            'total_training_time': float(sum(pretrained_history['time_per_epoch']))
+            'total_training_time': pretrained_total_time
         },
         'comparison': {
             'accuracy_gap': float(pretrained_results['accuracy'] - mini_results['accuracy']),
-            'training_speedup': float(summary['pretrained_model']['total_training_time'] / summary['mini_model']['total_training_time']) if summary['mini_model']['total_training_time'] > 0 else 0,
-            'inference_speedup': float(pretrained_results['avg_inference_time'] / mini_results['avg_inference_time']) if mini_results['avg_inference_time'] > 0 else 0
+            'training_speedup': float(pretrained_total_time / mini_total_time) if mini_total_time > 0 else 0,
+            'inference_speedup': float(pretrained_inference_time / mini_inference_time) if mini_inference_time > 0 else 0
         }
     }
     
